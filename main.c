@@ -179,10 +179,90 @@ int parse_event_headers(struct trace * trace)
   }
 }
 
+
+void * ristretto_trace_start(void)
+{
+  ssize_t ret;
+  struct trace * trace;
+  trace = malloc(sizeof(struct trace));
+
+  if (trace == NULL) return NULL;
+  memset(trace, 0, sizeof(struct trace));
+  
+  init_trace(trace);
+
+  ret = ioctl(trace->fd, PERF_EVENT_IOC_ENABLE, 0);
+
+  if (ret != 0) {
+    printf("ioctl enable: %d %d\n", ret, errno);
+  } else {
+    printf("%s", "Intel PT enabled\n");
+  }
+
+  return trace;
+}
+
+int ristretto_trace_stop(void * tr)
+{
+  int ret;
+  struct trace * trace = tr;
+  if (trace == NULL) {
+    printf("%s", "Failed to stop trace, NULL trace pointer\n");
+    return 1;
+  }
+
+  ret = ioctl(trace->fd, PERF_EVENT_IOC_DISABLE, 0);
+  if (ret != 0) {
+    printf("ioctl enable: %d %d\n", ret, errno);
+  } else {
+    printf("Intel PT disabled\n");
+  }
+  return 0;
+}
+
+int ristretto_trace_parse(void * tr)
+{
+  int ret;
+  int results[8] = {0};
+  struct trace * trace = tr;
+  struct perf_event_mmap_page * header;
+  
+  if (trace == NULL) {
+    printf("%s", "Failed to parse trace, NULL trace pointer\n");
+    return 1;
+  }
+
+  ret = read(trace->fd, &results, 32);
+  printf("read trace fd: ret %ld result: 0x%x\n", ret, results[0]);
+
+  parse_event_headers(trace);
+
+  header = trace->header;
+  
+  do {
+    char * ad = trace->aux;
+    fwrite(ad, 1, header->aux_head, stderr);
+  } while (0);
+  
+  return 0;
+}
+
+int ristretto_trace_cleanup(void * tr)
+{
+  struct trace * trace = tr;
+  if (trace == NULL) {
+    printf("%s", "Failed to cleanup trace, NULL trace pointer\n");
+    return 1;
+  }
+  close(trace->fd);
+  free(trace);
+  return 0;
+}
+
 //-----------------------------------
 // 
 //-----------------------------------
-int main(int argc, char ** argv)
+int main_test(int argc, char ** argv)
 {
   int fd, reti, inc;
   ssize_t ret;
@@ -251,11 +331,12 @@ int main(int argc, char ** argv)
   } while (0);
 
   // copy raw bytes for analysis
+  /*
   do {
     char * ad = trace.aux;
     fwrite(ad, 1, header->aux_head, stderr);
   } while (0);
-
+  */
   close(fd);
 }
 
@@ -265,15 +346,15 @@ int parse_event_header(void * head)
   struct perf_event_header * event_head = head;
   char * data = (void*)&event_head[1];
   
-  printf("event_head type: %d misc: %d size: %d\n", event_head->type, event_head->misc, event_head->size);
+  //printf("event_head type: %d misc: %d size: %d\n", event_head->type, event_head->misc, event_head->size);
   switch(event_head->type) {
     
   case PERF_RECORD_ITRACE_START:
     {
       u32 * pid = (u32 *)&event_head[1];
       u32 * tid = &(pid[1]);
-      printf("ITRACE START -- pid: %d(%x) tid: %d(%x)\n", *pid, *pid, *tid, *tid);
-      dump_hex(tid);
+      //printf("ITRACE START -- pid: %d(%x) tid: %d(%x)\n", *pid, *pid, *tid, *tid);
+      //dump_hex(tid);
       break;
     }
   case PERF_RECORD_AUX:
@@ -282,12 +363,12 @@ int parse_event_header(void * head)
       u64 * aux_size = &(aux_offset[1]);
       u64 * flags = &(aux_size[1]);
       struct sample_id * sample = (void*)&(flags[1]);
-      printf("RECORD_AUX -- offset: %lx, size: %lx, flags %lx\n", *aux_offset, *aux_size, *flags);
-      dump_hex(sample);
+      //printf("RECORD_AUX -- offset: %lx, size: %lx, flags %lx\n", *aux_offset, *aux_size, *flags);
+      //dump_hex(sample);
       break;
     }
   default:
-    printf("EVENT_HEADER_DEFAULT\n");
+    //printf("EVENT_HEADER_DEFAULT\n");
     break;
   }
   //event_head = (void*)event_head + event_head->size;
