@@ -88,7 +88,14 @@ int map_userspace(struct trace * trace)
   trace->header->aux_size = 4 * getpagesize();
   printf("mmap data_offset: %llx\n", trace->header->data_offset);
   printf("mmap data_size: %llx\n", trace->header->data_size);
+  printf("mmap data_head: %llx\n", trace->header->data_head);
+  printf("mmap data_tail: %llx\n", trace->header->data_tail);
+  
   printf("mmap aux_offset: %llx\n", trace->header->aux_offset);
+  printf("mmap aux_size: %llx\n", trace->header->aux_size);
+  printf("mmap aux_head: %llx\n", trace->header->aux_head);
+  printf("mmap aux_tail: %llx\n", trace->header->aux_tail);
+  
   trace->header->aux_offset = 9 * getpagesize();
   trace->aux = mmap(NULL, trace->header->aux_size, PROT_READ, MAP_SHARED, trace->fd, trace->header->aux_offset);
   if (trace->aux == MAP_FAILED) {
@@ -143,6 +150,7 @@ int pt_capture_init(struct perf_event_attr * pe)
   pe->sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME | PERF_SAMPLE_CPU | PERF_SAMPLE_IDENTIFIER | PERF_SAMPLE_ADDR;
   pe->config = PT_TSC | PT_NORETCOMP;
   // pe->config = PT_NORETCOMP | PERF_COUNT_HW_BRANCH_INSTRUCTIONS
+  //pe->aux_watermark = 0x4000;
 }
 
 int init_trace(struct trace * trace)
@@ -238,6 +246,18 @@ int ristretto_trace_parse(void * tr)
   parse_event_headers(trace);
 
   header = trace->header;
+
+  printf("==========================\n");
+  printf("mmap data_offset: %llx\n", trace->header->data_offset);
+  printf("mmap data_size: %llx\n", trace->header->data_size);
+  printf("mmap data_head: %llx\n", trace->header->data_head);
+  printf("mmap data_tail: %llx\n", trace->header->data_tail);
+  
+  printf("mmap aux_offset: %llx\n", trace->header->aux_offset);
+  printf("mmap aux_size: %llx\n", trace->header->aux_size);
+  printf("mmap aux_head: %llx\n", trace->header->aux_head);
+  printf("mmap aux_tail: %llx\n", trace->header->aux_tail);
+
   
   do {
     char * ad = trace->aux;
@@ -353,7 +373,7 @@ int parse_event_header(void * head)
     {
       u32 * pid = (u32 *)&event_head[1];
       u32 * tid = &(pid[1]);
-      //printf("ITRACE START -- pid: %d(%x) tid: %d(%x)\n", *pid, *pid, *tid, *tid);
+      printf("ITRACE START -- pid: %d(%x) tid: %d(%x)\n", *pid, *pid, *tid, *tid);
       //dump_hex(tid);
       break;
     }
@@ -363,12 +383,13 @@ int parse_event_header(void * head)
       u64 * aux_size = &(aux_offset[1]);
       u64 * flags = &(aux_size[1]);
       struct sample_id * sample = (void*)&(flags[1]);
-      //printf("RECORD_AUX -- offset: %lx, size: %lx, flags %lx\n", *aux_offset, *aux_size, *flags);
+      // flags PERF_AUX_FLAG_TRUNCATED = 1, PERF_AUX_FLAG_OVERWRITE = 2
+      printf("RECORD_AUX -- offset: %lx, size: %lx, flags %lx\n", *aux_offset, *aux_size, *flags);
       //dump_hex(sample);
       break;
     }
   default:
-    //printf("EVENT_HEADER_DEFAULT\n");
+    printf("EVENT_HEADER_DEFAULT %x\n", event_head->type);
     break;
   }
   //event_head = (void*)event_head + event_head->size;
