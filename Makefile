@@ -8,5 +8,5 @@ pi: pi.c librtrace.a
 librtrace.a: ristmain.o
 	ar rcs librtrace.a ristmain.o
 
-ristmain.o: main.c
-	gcc -c main.c -o ristmain.o
+ristmain.o: main.c ptxed.c
+	gcc main.c ptxed.c -o ristmain.o -pthread -lipt

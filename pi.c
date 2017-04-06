@@ -6,6 +6,7 @@
 #include <stdarg.h>
 //#include <varargs.h>
 #include <assert.h>
+#include <string.h>
 #include "rtrace.h"
 
 
@@ -64,10 +65,10 @@ void moreTestCalcPi(MoreTopWindow * destination, long double *result,
       if (0 == (i % 10000000)) //adjust this value to update UI more frequently
 	{
 	  printf("Calculating ");
-	  printf("Pi: %1.30llf", (*result)*4);
+	  printf("Pi: %1.30Lf", (*result)*4);
 	  printf(", at ");
 	  printf("%llu", i);
-	  printf(" iterations %d\n", i);
+	  printf(" iterations %lld\n", i);
 	}
       /* Pi approximation: Sum from i->infinity of ((-1)^i)/(1+(i*2)) */
       if (0 == (i%2)) //intentionally sloppy to slow up calculation
@@ -86,11 +87,10 @@ void moreTestCalcPi(MoreTopWindow * destination, long double *result,
       (*result) *= 4;
       printf("Done");
       printf("\n");
-      printf("Pi: %1.30llf", (*result));
+      printf("Pi: %1.30Lf", (*result));
       printf("\n");
     }
 }
-
 
 int main(int argc, char ** argv)
 {
@@ -98,13 +98,12 @@ int main(int argc, char ** argv)
   char *storage = NULL;
   char *inlineStorage = NULL;
   char *heapStorage = NULL;
+  struct flow_monitor *mon = NULL;
 
   printf("address of spin_test: %p\n", spin_test);
 
   moreAllocate(&inlineStorage, &heapStorage);
-
   storage = heapStorage;
-
   trace = ristretto_trace_start((unsigned long)spin_test, (unsigned long)spin_test + SIZE - 1);
 
   spin_test();
@@ -113,7 +112,6 @@ int main(int argc, char ** argv)
   ristretto_trace_stop(trace);
   ristretto_trace_parse(trace);
   ristretto_trace_cleanup(trace);
-
 
   free(heapStorage);
   return 0;
