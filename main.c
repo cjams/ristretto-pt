@@ -15,15 +15,11 @@
 #include <intel-pt.h>
 #include <assert.h>
 #include <signal.h>
+
+#include "rtrace.h"
 #include "cyc.h"
 
 #include "/home/srdavos/src/linux/usr/include/linux/perf_event.h"
-
-typedef unsigned int u32;
-typedef unsigned long int u64;
-typedef long int s64;
-
-#define rmb()asm volatile("lfence":::"memory")
 
 /*
 /sys/bus/event_source/devices/intel_pt/format/cyc:config:1
@@ -39,49 +35,13 @@ typedef long int s64;
 #define PT_TSC (1 << 10)
 #define PT_NORETCOMP (1 << 11)
 
-struct trace {
-  struct perf_event_attr * event;
-  struct perf_event_mmap_page * header;
-  void * base;
-  void * data;
-  void * aux;
-  int fd;
-};
-
-struct flow_monitor {
-    /* Data for reconstructing control-flow */
-    struct pt_insn_decoder *decoder;
-    struct pt_config *config;
-    struct pt_image *image;
-    struct pt_image_section_cache *iscache;
-    const struct trace *trace;
-
-    /* Data for the file backing the code section */
-    uint64_t foffset;
-    uint64_t fsize;
-    uint64_t fbase;
-    char *fname;
-    int codefd; /* fd for code thats executing forward-only */
-    int isid;
-
-    /* thread that decodes trace online and enforces forward-only */
-    pthread_t *thread;
-
-    /* start & end addresses for forward-only execution */
-    uint64_t fwdstart;
-    uint64_t fwdend;
-};
-
-extern void diagnose_insn(const char *errtype, struct pt_insn_decoder *decoder,
-			  struct pt_insn *insn, int errcode);
-
 // pid == 0, cpu == -1  ::  measures calling process/thread on any CPU
 
 int perf_event_open(struct perf_event_attr * attr, pid_t pid, int cpu, int group_fd, unsigned long flags);
 
 int test_func(int i) {
   int inc = 0;
-  for (1; i < 10; i++) {
+  for (; i < 10; i++) {
     if (i %2 == 0) inc++;
   }
   return inc;
@@ -185,34 +145,40 @@ int pt_capture_init(struct perf_event_attr * pe)
   pe->config = PT_TSC | PT_NORETCOMP;
   // pe->config = PT_NORETCOMP | PERF_COUNT_HW_BRANCH_INSTRUCTIONS
   //pe->aux_watermark = 0x4000;
+  return 0;
 }
 
-//int alloc_aux_buffer(struct trace * trace)
-//{
-//
-//}
-
-int init_trace(struct trace * trace)
+int init_trace(struct trace * trace, char *start, char *end)
 {
   printf("%s\n", "Initializing trace capture");
 
   trace->event = malloc(sizeof(struct perf_event_attr));
-  if (trace->event == NULL) return 1;
+  if (trace->event == NULL) return -1;
 
   //branch_trace_capture_init(trace->event);
   pt_capture_init(trace->event);
 
   trace->fd = syscall(__NR_perf_event_open, trace->event, 0, -1, -1, 0);
   if (trace->fd == -1) {
-    perror("syscall errno:\n");
-    printf("syscall error: %d\n", errno);
+    perror("syscall errno:");
+    free(trace->event);
+    trace->event = NULL;
+    return -1;
   }
 
   map_userspace(trace);
 
-//  alloc_aux_buffer(trace);
+  trace->monitor = flow_monitor_alloc();
+  if (trace->monitor == NULL) {
+    fprintf(stderr, "ERROR: flow_monitor_alloc failed\n");
+    ristretto_trace_cleanup(trace);
+    return -1;
+  }
 
-  return 0;
+  /* this has to be called once and only once in the process */
+  xed_tables_init();
+
+  return flow_monitor_start(trace, start, end);
 }
 
 int parse_event_headers(struct trace * trace)
@@ -227,18 +193,22 @@ int parse_event_headers(struct trace * trace)
     parse_event_header(event_head);
     event_head = (void*)event_head + event_head->size;
   }
+  return 0;
 }
 
-void * ristretto_trace_start(unsigned long start, unsigned long end)
+void * ristretto_trace_start(char *start, char *end)
 {
   ssize_t ret;
   struct trace * trace;
-  trace = malloc(sizeof(struct trace));
 
+  trace = calloc(1, sizeof(struct trace));
   if (trace == NULL) return NULL;
-  memset(trace, 0, sizeof(struct trace));
 
-  init_trace(trace);
+  if (init_trace(trace, start, end) < 0) {
+    fprintf(stderr, "ERROR: init_trace");
+    free(trace);
+    return NULL;
+  }
 
   ret = ioctl(trace->fd, PERF_EVENT_IOC_CR3_FILTER, 0);
   if (ret != 0) {
@@ -247,14 +217,14 @@ void * ristretto_trace_start(unsigned long start, unsigned long end)
     printf("%s", "Intel PT cr3 filter enabled\n");
   }
 
-  ret = ioctl(trace->fd, PERF_EVENT_IOC_IP_FILTER_BASE, start);
+  ret = ioctl(trace->fd, PERF_EVENT_IOC_IP_FILTER_BASE, (u64)start);
   if (ret != 0) {
     perror("IP filter base");
   } else {
     printf("%s", "Intel PT IP filter base set\n");
   }
 
-  ret = ioctl(trace->fd, PERF_EVENT_IOC_IP_FILTER_LIMIT, end);
+  ret = ioctl(trace->fd, PERF_EVENT_IOC_IP_FILTER_LIMIT, (u64)end);
   if (ret != 0) {
     perror("IP filter limit");
   } else {
@@ -295,11 +265,11 @@ int ristretto_trace_parse(void * tr)
   int results[8] = {0};
   struct trace * trace = tr;
   struct perf_event_mmap_page * header;
-  unsigned long trace_data;
+  struct pt_config *config;
 
   if (trace == NULL) {
     printf("%s", "Failed to parse trace, NULL trace pointer\n");
-    return 1;
+    return -1;
   }
 
   ret = read(trace->fd, &results, 32);
@@ -320,12 +290,22 @@ int ristretto_trace_parse(void * tr)
   printf("mmap aux_head: %llx\n", trace->header->aux_head);
   printf("mmap aux_tail: %llx\n", trace->header->aux_tail);
 
-  do {
-    char * ad = trace->aux;
-    trace_data = header->aux_head;
-    rmb();
-    fwrite(ad, 1, trace_data, stderr);
-  } while (0);
+  int aux_dump = open("trace_aux_dump", O_RDWR | O_CREAT | O_TRUNC, S_IRWXU | S_IRWXG | S_IRWXO);
+  write(aux_dump, trace->aux, trace->header->aux_head);
+  close(aux_dump);
+
+  config = trace->monitor->config;
+  if (config == NULL) {
+    fprintf(stderr, "NULL monitor pt_config\n");
+    return -1;
+  }
+
+  config->end = config->begin + header->aux_head - 1;
+  rmb();
+
+
+  printf("Calling enforce_fwd_only...\n");
+  enforce_fwd_only(trace);
 
   return 0;
 }
@@ -337,8 +317,12 @@ int ristretto_trace_cleanup(void * tr)
     printf("%s", "Failed to cleanup trace, NULL trace pointer\n");
     return 1;
   }
+
+  flow_monitor_cleanup(trace->monitor);
   close(trace->fd);
+  free(trace->event);
   free(trace);
+
   return 0;
 }
 
@@ -357,7 +341,7 @@ int main_test(int argc, char ** argv)
   //struct perf_event_attr attr;
   //struct perf_event_mmap_page mmap_page;
 
-  init_trace(&trace);
+//  init_trace(&trace);
 
   /*
   reti = ioctl(fd, PERF_EVENT_IOC_RESET, 0);
@@ -421,6 +405,7 @@ int main_test(int argc, char ** argv)
   } while (0);
   */
   close(fd);
+  return 0;
 }
 
 
@@ -457,262 +442,5 @@ int parse_event_header(void * head)
   }
   event_head = (void*)event_head + event_head->size;
   dump_hex(event_head);
-}
-
-void init_iscache(struct pt_image_section_cache **iscache)
-{
-    *iscache = pt_iscache_alloc(NULL);
-
-    if (!*iscache) {
-        fprintf(stderr, "ERROR: pt_iscache_alloc() failed.\n");
-    }
-}
-
-void init_image(struct pt_image **img)
-{
-    *img = pt_image_alloc(NULL);
-
-    if (!*img) {
-        fprintf(stderr, "ERROR: pt_image_alloc() failed.\n");
-    }
-}
-
-void init_config(struct pt_config **config, struct trace *tr)
-{
-    *config = calloc(1, sizeof(struct pt_config));
-
-    if (!*config) {
-        fprintf(stderr, "ERROR: calloc(1, sizeof(struct pt_config)) failed.\n");
-        return;
-    }
-
-    pt_config_init(*config);
-    (*config)->begin = tr->aux;
-
-    /*
-     * aux->head is constantly changing at this point, so we set to
-     * end = aux + aux_size
-     */
-    (*config)->end = (uint8_t *)tr->aux + tr->header->aux_size - 1;
-}
-
-void init_decoder(struct pt_insn_decoder **dec, struct pt_config *config)
-{
-    *dec = pt_insn_alloc_decoder(config);
-
-    if (!*dec) {
-        fprintf(stderr, "ERROR: pt_insn_alloc_decoder() failed.\n");
-    }
-}
-
-int sync_decoder(struct pt_insn_decoder *dec)
-{
-    int ret;
-
-    ret = pt_insn_sync_forward(dec);
-
-    if (ret < 0) {
-        fprintf(stderr, "ERROR: pt_insn_sync_forward: ret = %d\n", ret);
-    }
-
-    return ret;
-}
-
-int init_block_file(const uint8_t *addr, long len, struct flow_monitor *mon)
-{
-    int ret, fd, isid;
-    uint64_t foffset, base;
-
-    assert(len > 0);
-
-    foffset = base = 0;
-    mon->fname = "__ris_fwd_only__";
-    fd = open(mon->fname, O_CREAT | O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR);
-    if (fd < 0) {
-        perror("ERROR: init_block_file:");
-        return fd;
-    }
-
-    if ((ret = write(fd, addr, len)) != len) {
-        fprintf(stderr,
-            "WARNING: wrote %d bytes but %ld were requested", ret, len);
-        goto end;
-    }
-
-    isid = pt_iscache_add_file(mon->iscache, mon->fname, foffset, len, base);
-    if (isid < 0) {
-        fprintf(stderr, "ERROR: pt_iscache_add_file failed");
-	goto end;
-    }
-
-    ret = pt_image_add_cached(mon->image, mon->iscache, isid, NULL);
-    if (ret < 0) {
-        fprintf(stderr, "ERROR: pt_image_add_cached failed");
-        goto end;
-    }
-
-    mon->fsize = (uint64_t)len;
-    mon->foffset = mon->fbase = 0;
-    mon->isid = isid;
-    mon->codefd = fd;
-    return fd;
-
-end:
-    close(fd); return -1;
-}
-
-void close_file(int fd)
-{
-    if (fd >= 0) {
-        close(fd);
-    }
-}
-
-
-void free_flow_monitor(struct flow_monitor *mon)
-{
-    assert(mon != NULL);
-
-    close_file(mon->codefd);
-    pt_iscache_free(mon->iscache);
-    pt_image_free(mon->image);
-    pt_insn_free_decoder(mon->decoder);
-
-    if (mon->config) free(mon->config);
-    if (mon->thread) free(mon->thread);
-
-    free(mon);
-}
-
-/**
- * @mtr - flow_monitor
- */
-void * enforce_fwd_only(void *mtr)
-{
-    uint64_t sync, new_sync, addr;
-    struct flow_monitor *mon = mtr;
-    int ret;
-
-    sync = 0ull;
-    addr = mon->fwdstart;
-    while(1) {
-        struct pt_insn insn;
-
-        ret = pt_insn_sync_forward(mon->decoder);
-        if (ret < 0) {
-            if (ret == -pte_eos) {
-                fprintf(stderr, "pt_insn_sync_forward: ret = pte_eos\n");
-                break;
-            }
-
-            diagnose_insn("sync error", mon->decoder, &insn, ret);
-            ret = pt_insn_get_offset(mon->decoder, &new_sync);
-            if (ret < 0 || new_sync <= sync) {
-                break;
-            }
-
-            sync = new_sync;
-            continue;
-        }
-
-        while(1) {
-            ret = pt_insn_next(mon->decoder, &insn, sizeof(insn));
-            if (ret < 0) {
-                if (ret == -pte_eos) {
-                    fprintf(stderr, "pt_insn_next: ret = pte_eos\n");
-                    return (void *)0;
-                }
-
-                fprintf(stderr, "pt_insn_next: ret = %d\n", ret * -1);
-                break;
-            }
-
-            if (addr > insn.ip) {
-                fprintf(stderr, "FATAL: forward-only violation detected\n");
-                return (void *)pthread_kill(pthread_self(), SIGKILL);
-            }
-
-            if (insn.ip >= mon->fwdend) {
-                fprintf(stdout, "DEBUG: insn.ip: %lu fwdend: %lu",
-                    insn.ip, mon->fwdend);
-                fprintf(stdout, "DEBUG: Leaving flow monitor thread");
-                return (void *)0;
-            }
-
-            fprintf(stdout, "DEBUG: insn.ip: %lu fwdend: %lu",
-                insn.ip, mon->fwdend);
-            addr = insn.ip;
-        }
-    }
-
-    fprintf(stdout, "DEBUG: ret: %d", ret * -1);
-    return (void *)ret;
-}
-
-/**
- * @tr - read-only pt trace
- * @addr - address of code block that requires forward-only execution
- * @len - length of code block that requires forward-only execution
- */
-void * enforcement_start(void *tr, void *addr, long len)
-{
-    int ret;
-    struct flow_monitor *mtr = NULL;
-
-    mtr = calloc(1, sizeof(struct flow_monitor));
-    if (!mtr) {
-        fprintf(stderr, "ERROR: calloc(1, sizeof(struct flow_monitor)) failed");
-        return NULL;
-    }
-
-    init_iscache(&mtr->iscache);
-    init_image(&mtr->image);
-    init_config(&mtr->config, tr);
-    init_decoder(&mtr->decoder, mtr->config);
-
-    if (!(mtr->iscache && mtr->image && mtr->config && mtr->decoder)) {
-        goto end;
-    }
-
-    if (init_block_file(addr, len, mtr) < 0) {
-        goto end;
-    }
-
-    ret = pt_insn_set_image(mtr->decoder, mtr->image);
-    if  (ret < 0) {
-        goto end;
-    }
-
-//    ret = sync_decoder(decoder);
-//    if (ret < 0) {
-//        goto end;
-//    }
-    mtr->thread = calloc(1, sizeof(pthread_t));
-    if (!mtr->thread) {
-        fprintf(stderr, "ERROR: calloc(1, sizeof(pthread_t)) failed");
-        goto end;
-    }
-
-    mtr->trace = tr;
-    mtr->fwdstart = (uint64_t)addr;
-    mtr->fwdend = mtr->fwdstart + len - 1;
-
-    if (pthread_create(mtr->thread, NULL, enforce_fwd_only, (void *)mtr) < 0) {
-        printf("pthread_create failed: ret = %d, errno = %d\n", ret, errno);
-        goto end;
-    }
-
-    return mtr;
-
-end:
-    free_flow_monitor(mtr);
-    return NULL;
-}
-
-void enforcement_stop(void *mtr)
-{
-    assert(mtr != NULL);
-
-    /* for now we just tear everything down */
-    free_flow_monitor((struct flow_monitor *)mtr);
+  return 0;
 }
