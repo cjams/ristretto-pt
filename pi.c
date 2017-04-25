@@ -26,9 +26,10 @@ char msgBuffer[BUFFERSIZE];
 
 typedef void * MoreTopWindow;
 
+unsigned long SIZE = 47;
 
 void moreAllocate(char ** inlineStorage, char ** heapStorage)
-{  
+{
   *heapStorage = (char*) malloc(4096*2);
 }
 
@@ -37,6 +38,16 @@ unsigned char checkHalt(MoreTopWindow * destination)
   return 0;
 }
 
+int spin_test()
+{
+    int i = 0;
+    int ret = 0;
+    for (i; i < 10000; i++) {
+        ret = i + 1;
+    }
+
+    return ret;
+}
 
 void moreTestCalcPi(MoreTopWindow * destination, long double *result,
 		    unsigned long long iterations)
@@ -88,19 +99,22 @@ int main(int argc, char ** argv)
   char *inlineStorage = NULL;
   char *heapStorage = NULL;
 
+  printf("address of spin_test: %p\n", spin_test);
+
   moreAllocate(&inlineStorage, &heapStorage);
 
   storage = heapStorage;
 
-  trace = ristretto_trace_start();
-  
-  moreTestCalcPi(NULL, (long double *)storage, 100000000);
+  trace = ristretto_trace_start((unsigned long)spin_test, (unsigned long)spin_test + SIZE - 1);
+
+  spin_test();
+//  moreTestCalcPi(NULL, (long double *)storage, 100000000);
 
   ristretto_trace_stop(trace);
   ristretto_trace_parse(trace);
   ristretto_trace_cleanup(trace);
 
-  
+
   free(heapStorage);
   return 0;
 }

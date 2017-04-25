@@ -1,0 +1,174 @@
+diff --git a/arch/x86/events/intel/pt.c b/arch/x86/events/intel/pt.c
+index 5900471ee508..76a5ee5e0f14 100644
+--- a/arch/x86/events/intel/pt.c
++++ b/arch/x86/events/intel/pt.c
+@@ -368,6 +368,50 @@ static const struct pt_address_range {
+ 	}
+ };
+ 
++static u64 pt_config_cr3_match(struct perf_event *event)
++{
++        u64 rtit_ctl = 0;
++        u64 match = 0;
++
++        if (event->cr3_match == 0) {
++            printk("Intel PT: CR3 match value is 0");
++            return rtit_ctl;
++        }
++
++        wrmsrl(MSR_IA32_RTIT_CR3_MATCH, event->cr3_match);
++        printk("Intel PT: event->cr3_match: %llu", event->cr3_match);
++        rdmsrl(MSR_IA32_RTIT_CR3_MATCH, match);
++        printk("Intel PT: RTIT_CR3_MATCH: %llu", match);
++        rtit_ctl = RTIT_CTL_CR3EN;
++
++        return rtit_ctl;
++}
++
++static u64 pt_config_ip_filter(struct perf_event *event)
++{
++        u64 rtit_ctl = 0;
++        u64 base, limit = 0;
++
++        if (event->ip_filter_base == 0 || event->ip_filter_limit == 0) {
++            pr_debug("Intel PT: IP filter base || limit == 0");
++            return rtit_ctl;
++        }
++
++        wrmsrl(MSR_IA32_RTIT_ADDR0_A, event->ip_filter_base);
++        wrmsrl(MSR_IA32_RTIT_ADDR0_B, event->ip_filter_limit);
++        printk("Intel PT: ip_filter_base: 0x%llx", event->ip_filter_base);
++        printk("Intel PT: ip_filter_limit: 0x%llx", event->ip_filter_limit);
++
++        rdmsrl(MSR_IA32_RTIT_ADDR0_A, base);
++        rdmsrl(MSR_IA32_RTIT_ADDR0_B, limit);
++        printk("Intel PT: RTIT_ADDR0_A: 0x%llx", base);
++        printk("Intel PT: RTIT_ADDR0_B: 0x%llx", limit);
++
++
++        rtit_ctl = 1ull << RTIT_CTL_ADDR0_OFFSET;
++        return rtit_ctl;
++}
++
+ static u64 pt_config_filters(struct perf_event *event)
+ {
+ 	struct pt_filters *filters = event->hw.addr_filters;
+@@ -418,7 +462,9 @@ static void pt_config(struct perf_event *event)
+ 		wrmsrl(MSR_IA32_RTIT_STATUS, 0);
+ 	}
+ 
+-	reg = pt_config_filters(event);
++        reg = pt_config_cr3_match(event);
++        reg |= pt_config_ip_filter(event);
++	reg |= pt_config_filters(event);
+ 	reg |= RTIT_CTL_TOPA | RTIT_CTL_BRANCH_EN | RTIT_CTL_TRACEEN;
+ 
+ 	if (!event->attr.exclude_kernel)
+diff --git a/include/linux/perf_event.h b/include/linux/perf_event.h
+index 000fdb211c7d..89247754be20 100644
+--- a/include/linux/perf_event.h
++++ b/include/linux/perf_event.h
+@@ -682,6 +682,9 @@ struct perf_event {
+ 	/* vma address array for file-based filders */
+ 	unsigned long			*addr_filters_offs;
+ 	unsigned long			addr_filters_gen;
++        u64                             cr3_match;
++        u64                             ip_filter_base;
++        u64                             ip_filter_limit;
+ 
+ 	void (*destroy)(struct perf_event *);
+ 	struct rcu_head			rcu_head;
+diff --git a/include/uapi/linux/perf_event.h b/include/uapi/linux/perf_event.h
+index c66a485a24ac..208d763cf530 100644
+--- a/include/uapi/linux/perf_event.h
++++ b/include/uapi/linux/perf_event.h
+@@ -407,6 +407,9 @@ struct perf_event_attr {
+ #define PERF_EVENT_IOC_ID		_IOR('$', 7, __u64 *)
+ #define PERF_EVENT_IOC_SET_BPF		_IOW('$', 8, __u32)
+ #define PERF_EVENT_IOC_PAUSE_OUTPUT	_IOW('$', 9, __u32)
++#define PERF_EVENT_IOC_CR3_FILTER	_IO ('$', 10)
++#define PERF_EVENT_IOC_IP_FILTER_BASE	_IOW('$', 11, __u64)
++#define PERF_EVENT_IOC_IP_FILTER_LIMIT	_IOW('$', 12, __u64)
+ 
+ enum perf_event_ioc_flags {
+ 	PERF_IOC_FLAG_GROUP		= 1U << 0,
+diff --git a/kernel/events/core.c b/kernel/events/core.c
+index ff01cba86f43..9a28a97d2557 100644
+--- a/kernel/events/core.c
++++ b/kernel/events/core.c
+@@ -4678,6 +4678,36 @@ static int perf_event_set_output(struct perf_event *event,
+ static int perf_event_set_filter(struct perf_event *event, void __user *arg);
+ static int perf_event_set_bpf_prog(struct perf_event *event, u32 prog_fd);
+ 
++static int perf_event_cr3_filter(struct perf_event *event)
++{
++        struct task_struct *task = READ_ONCE(event->ctx->task);
++        struct mm_struct *mm = NULL;
++
++        mm = get_task_mm(task);
++        if (!mm) {
++            printk("Intel PT: CR3 filter: NULL mm");
++            return -EINVAL;
++        }
++
++        event->cr3_match = virt_to_phys(mm->pgd);
++        printk("Intel PT: CR3 to match: %llu", event->cr3_match);
++        mmput(mm);
++
++        return 0;
++}
++
++static int perf_event_ip_filter_base(struct perf_event *event, unsigned long base)
++{
++        event->ip_filter_base = base;
++        return 0;
++}
++
++static int perf_event_ip_filter_limit(struct perf_event *event, unsigned long limit)
++{
++        event->ip_filter_limit = limit;
++        return 0;
++}
++
+ static long _perf_ioctl(struct perf_event *event, unsigned int cmd, unsigned long arg)
+ {
+ 	void (*func)(struct perf_event *);
+@@ -4685,6 +4715,7 @@ static long _perf_ioctl(struct perf_event *event, unsigned int cmd, unsigned lon
+ 
+ 	switch (cmd) {
+ 	case PERF_EVENT_IOC_ENABLE:
++                printk(KERN_INFO "running perf_ioctl enable");
+ 		func = _perf_event_enable;
+ 		break;
+ 	case PERF_EVENT_IOC_DISABLE:
+@@ -4730,6 +4761,18 @@ static long _perf_ioctl(struct perf_event *event, unsigned int cmd, unsigned lon
+ 	case PERF_EVENT_IOC_SET_FILTER:
+ 		return perf_event_set_filter(event, (void __user *)arg);
+ 
++        case PERF_EVENT_IOC_CR3_FILTER:
++                printk(KERN_INFO "running perf_ioctl cr3 filter");
++                return perf_event_cr3_filter(event);
++
++        case PERF_EVENT_IOC_IP_FILTER_BASE:
++                printk(KERN_INFO "running perf_ioctl ip filter base");
++                return perf_event_ip_filter_base(event, arg);
++
++        case PERF_EVENT_IOC_IP_FILTER_LIMIT:
++                printk(KERN_INFO "running perf_ioctl ip filter limit");
++                return perf_event_ip_filter_limit(event, arg);
++
+ 	case PERF_EVENT_IOC_SET_BPF:
+ 		return perf_event_set_bpf_prog(event, arg);
+ 
+diff --git a/tools/include/uapi/linux/perf_event.h b/tools/include/uapi/linux/perf_event.h
+index c66a485a24ac..be9f7a98c33c 100644
+--- a/tools/include/uapi/linux/perf_event.h
++++ b/tools/include/uapi/linux/perf_event.h
+@@ -407,6 +407,7 @@ struct perf_event_attr {
+ #define PERF_EVENT_IOC_ID		_IOR('$', 7, __u64 *)
+ #define PERF_EVENT_IOC_SET_BPF		_IOW('$', 8, __u32)
+ #define PERF_EVENT_IOC_PAUSE_OUTPUT	_IOW('$', 9, __u32)
++#define PERF_EVENT_IOC_CR3_FILTER	_IO ('$', 10)
+ 
+ enum perf_event_ioc_flags {
+ 	PERF_IOC_FLAG_GROUP		= 1U << 0,
