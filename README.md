@@ -19,7 +19,29 @@ TIP -- Indirect branches / function returns
 TIP.PGE -- packet generation enabled
 TIP.PGD -- packet generation disabled
 FUP -- Asynchronous event locations
-MODE.TSX -- transactional state 
+MODE.TSX -- transactional state
 
+## Building
 
+* Apply the ristretto-filters.patch to the following linux kernel commit:
 
+    commit c154165e93b7f1ee9c63906fa200bc735098d47d
+    Merge: 160062e19001 fc280fe87144
+    Author: Linus Torvalds <torvalds@linux-foundation.org>
+    Date:   Thu Apr 20 15:31:08 2017 -0700
+
+    or fetch/build the ristretto branch from https://github.com/connojd/linux
+
+* Build/install the kernel
+
+* Run the following:
+    cd ~/ristretto-pt
+    git clone https://github.com/connojd/processor-trace.git
+    git clone https://github.com/intelxed/xed.git
+    git clone https://github.com/intelxed/mbuild.git
+
+    mkdir build
+    cd build
+    ../xed/mfile.py
+
+* processor-trace must be configured with cmake -DRISTRETTO_PT ..
