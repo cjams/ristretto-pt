@@ -13,13 +13,23 @@
 
 #include "rtrace.h"
 #include "pt_ild.h"
+#include "pt_insn_decoder.h"
 #include "ptxed.h"
+
+#define DEBUG_FILE_FLAGS O_RDWR | O_CREAT | O_TRUNC
+#define DEBUG_FILE_MODE  S_IRUSR | S_IRGRP | S_IROTH | S_IWUSR | S_IWGRP | S_IWOTH
 
 extern void diagnose_insn(const char *errtype, struct pt_insn_decoder *decoder,
     struct pt_insn *insn, int errcode);
 
 extern void print_insn(const struct pt_insn *insn, xed_state_t *xed,
     const struct ptxed_options *options, uint64_t offset, uint64_t time);
+
+
+void __attribute__((constructor)) init(void)
+{
+    pt_ild_init();
+}
 
 static struct pt_image_section_cache* init_iscache()
 {
@@ -107,7 +117,7 @@ static int init_block_file(struct flow_monitor *mon)
         goto end;
     }
 
-    mon->fsize = (u64)len;
+    mon->memfdsize = (u64)len;
     lseek(fd, mon->foffset, SEEK_SET);
 
     isid = pt_iscache_add_file_fd(mon->iscache, mon->fname, mon->foffset, len, mon->fwdstart, fd);
@@ -123,7 +133,7 @@ static int init_block_file(struct flow_monitor *mon)
         goto end;
     }
 
-    mon->codefd = fd;
+    mon->memfd = fd;
     return fd;
 
 end:
@@ -144,12 +154,64 @@ void flow_monitor_free(struct flow_monitor *mtr)
 
 void flow_monitor_cleanup(struct flow_monitor *mtr)
 {
-    close_file(mtr->codefd);
+    close_file(mtr->memfd);
     pt_iscache_free(mtr->iscache);
     pt_image_free(mtr->image);
     pt_insn_free_decoder(mtr->decoder);
     free(mtr->config);
     flow_monitor_free(mtr);
+}
+
+void print_trace_and_binary(struct trace *tr)
+{
+    char *memfd_buf;
+    struct pt_config *config;
+    struct stat st;
+    int config_dump, memfd_dump, memfd, ret;
+
+    config = tr->monitor->config;
+    memfd = tr->monitor->memfd;
+
+    config_dump = open("config_dump", DEBUG_FILE_FLAGS, DEBUG_FILE_MODE);
+    if (config_dump == -1) {
+        perror("ERROR opening config_dump");
+    }
+
+    assert(config->end - config->begin + 1 == tr->header->aux_head);
+    ret = write(config_dump, config->begin, config->end - config->begin + 1);
+    if (ret != tr->header->aux_head) {
+        printf("ERROR config_dump write failed\n");
+    }
+
+    fstat(memfd, &st);
+    printf("offset of memfd: %ld\n", lseek(memfd, 0, SEEK_CUR));
+    printf("size of memfd: %ld\n", st.st_size);
+
+    memfd_buf = malloc(tr->monitor->memfdsize);
+    if (memfd_buf == NULL) {
+        printf("ERROR memfd_buf malloc failed\n");
+        goto end;
+    }
+
+    ret = read(memfd, memfd_buf, tr->monitor->memfdsize);
+    if (ret != tr->monitor->memfdsize) {
+        printf("ERROR memfd read failed\n");
+    }
+
+    memfd_dump = open("memfd_dump", DEBUG_FILE_FLAGS, DEBUG_FILE_MODE);
+    if (memfd_dump == -1) {
+        perror("ERROR opening memfd_dump");
+    }
+
+    ret = write(memfd_dump, memfd_buf, tr->monitor->memfdsize);
+    if (ret != tr->monitor->memfdsize) {
+        printf("ERROR memfd write failed\n");
+    }
+
+end:
+    close(config_dump);
+    close(memfd_dump);
+    free(memfd_buf);
 }
 
 /**
@@ -160,40 +222,21 @@ int enforce_fwd_only(struct trace *tr)
     printf("Executing enforce_fwd_only...\n");
 
     xed_state_t xed;
-    u64 sync, addr, offset;
-    int ret;
-    struct ptxed_options options;
+    u64 addr = 0, sync = 0, offset = 0;
     struct flow_monitor *mtr = tr->monitor;
-    struct stat st;
+    struct ptxed_options options;
+    int ret;
 
     xed_state_zero(&xed);
-    sync = 0ull;
-    offset = 0ull;
     addr = mtr->fwdstart;
-    char memfd_buf[64];
 
     options.dont_print_insn = 0;
     options.quiet = 0;
     options.att_format = 1;
 
-    int config_dump = open("config_dump", O_RDWR | O_CREAT | O_TRUNC, S_IRWXU | S_IRWXG | S_IRWXO);
-    if (config_dump == -1)
-        perror("ERROR opening config_dump");
-
-    write(config_dump, tr->monitor->config->begin, tr->monitor->config->end - tr->monitor->config->begin + 1);
-    close(config_dump);
-
-    fstat(tr->monitor->codefd, &st);
-    printf("offset of codefd: %ld\n", lseek(tr->monitor->codefd, 0, SEEK_CUR));
-    printf("size   of codefd: %ld\n", st.st_size);
-
-    read(tr->monitor->codefd, memfd_buf, 64);
-    int memfd_dump = open("memfd_dump", O_RDWR | O_CREAT | O_TRUNC, S_IRWXU | S_IRWXG | S_IRWXO);
-    if (memfd_dump == -1)
-        perror("ERROR opening memfd_dump");
-
-    write(memfd_dump, memfd_buf, 64);
-    close(memfd_dump);
+#ifdef RISTRETTO_DEBUG
+    print_trace_and_binary(tr);
+#endif
 
     while(1) {
         struct pt_insn insn;
@@ -201,10 +244,12 @@ int enforce_fwd_only(struct trace *tr)
         insn.ip = 0ull;
         ret = pt_insn_sync_forward(mtr->decoder);
         if (ret < 0) {
-            u64 new_sync;
+            u64 new_sync, temp;
 
             if (ret == -pte_eos) {
+                pt_insn_get_offset(mtr->decoder, &temp);
                 fprintf(stderr, "pt_insn_sync_forward: ret = pte_eos\n");
+                fprintf(stderr, "packet offset: %lx\n", temp);
                 break;
             }
 
@@ -220,40 +265,36 @@ int enforce_fwd_only(struct trace *tr)
         }
 
         while(1) {
-            ret = pt_insn_next(mtr->decoder, &insn, sizeof(insn));
-            if (ret < 0) {
-                fprintf(stderr, "pt_insn_next: ret = %d\n", ret * -1);
-                break;
-            }
-
+            printf("DEBUG: decoder->ip: %lx\n", mtr->decoder->ip);
             ret = pt_insn_get_offset(mtr->decoder, &offset);
             if (ret < 0) {
-                fprintf(stderr, "pt_insn_get_offset: ret = %d\n", ret * -1);
+                fprintf(stderr, "ERROR: pt_insn_get_offset: ret = %d\n", ret * -1);
                 break;
             }
 
-            fprintf(stdout, "  insn.ip == %lu\n", insn.ip);
-            fprintf(stdout, "  addr    == %lu\n", addr);
-            fprintf(stdout, "  offset  == %lu\n", offset);
+            ret = pt_insn_next(mtr->decoder, &insn, sizeof(insn));
+            if (ret < 0) {
+                fprintf(stderr, "ERROR: pt_insn_next: ret = %d\n", ret * -1);
+                break;
+            }
 
+#ifdef RISTRETTO_DEBUG
             print_insn(&insn, &xed, &options, offset, 0);
-
+#endif
             if (addr > insn.ip) {
                 fprintf(stderr, "FATAL: forward-only violation detected\n");
                 exit(1);
             }
 
-            if (insn.ip >= mtr->fwdend) {
-                fprintf(stdout, "DEBUG (insn.ip >= mtr->fwdend): insn.ip: %lu fwdend: %lu\n",
-                    insn.ip, mtr->fwdend);
-                return 0;
+            if (mtr->decoder->ip > mtr->fwdend || mtr->decoder->ip < mtr->fwdstart) {
+                fprintf(stderr, "FATAL: forward-only violation detected\n");
+                exit(1);
             }
 
             addr = insn.ip;
         }
     }
 
-    fprintf(stdout, "DEBUG: ret: %d\n", ret * -1);
     return 0;
 }
 
@@ -309,9 +350,4 @@ err:
     pt_insn_free_decoder(mtr->decoder);
     free(mtr->config);
     return -1;
-}
-
-void __attribute__((constructor)) init(void)
-{
-    pt_ild_init();
 }

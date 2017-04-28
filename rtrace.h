@@ -13,26 +13,25 @@ typedef unsigned long int u64;
 typedef long int s64;
 
 struct flow_monitor {
-    /* structs for reconstructing control-flow */
+    /* structs for reconstructing control flow */
     struct pt_insn_decoder *decoder;
     struct pt_config *config;
     struct pt_image *image;
     struct pt_image_section_cache *iscache;
-    struct trace *trace;
 
-    /* Data for the file backing the code section */
-    unsigned long foffset;
-    unsigned long fsize;
-    char *fname;
-    int codefd; /* fd for code thats executing forward-only */
-    int isid;
-
-    /* start & end addresses for forward-only execution */
+    /* start & end addresses (as integers) for forward-only execution */
     unsigned long fwdstart;
     unsigned long fwdend;
 
     /* the actual address of the forward-only block */
     char *addr;
+
+    /* Data for the file backing the forward-only section */
+    unsigned long foffset;
+    unsigned long memfdsize;
+    char *fname;
+    int memfd; /* fd for code thats executing forward-only */
+    int isid;
 };
 
 struct trace {
@@ -43,7 +42,7 @@ struct trace {
   void * aux;
   int fd;
 
-  /* struct for enforcing forward only */
+  /* struct for enforcing forward-only */
   struct flow_monitor *monitor;
 };
 

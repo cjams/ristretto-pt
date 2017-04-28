@@ -4,7 +4,7 @@ RIS:=libristretto.a
 XED:=libxed.a
 SRC:=main.c processor-trace/ptxed/src/libptxed.c monitor.c
 OBJ:=main.o libptxed.o monitor.o
-CFLAGS:=-I/home/srdavos/build/kits/xed-install-base-2017-04-20-lin-x86-64/include/xed -I/home/srdavos/ristretto-pt/processor-trace/libipt/internal/include -I/home/srdavos/ristretto-pt/processor-trace/ptxed/src -static -v
+CFLAGS:=-I/home/srdavos/build/kits/xed-install-base-2017-04-20-lin-x86-64/include/xed -I/home/srdavos/ristretto-pt/processor-trace/libipt/internal/include -I/home/srdavos/ristretto-pt/processor-trace/ptxed/src -static -v -DRISTRETTO_DEBUG
 LDFLAGS:=
 
 all: pi

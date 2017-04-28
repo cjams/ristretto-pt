@@ -27,7 +27,7 @@ char msgBuffer[BUFFERSIZE];
 
 typedef void * MoreTopWindow;
 
-unsigned long SIZE = 64;
+unsigned long SIZE = 0x30;
 
 void moreAllocate(char ** inlineStorage, char ** heapStorage)
 {
@@ -49,6 +49,22 @@ int spin_test()
     }
 
     return ret;
+}
+
+int straight_test()
+{
+    int i = 4;
+    i = i % 2;
+    return i;
+}
+
+int call_test()
+{
+    int j = 0;
+    j++;
+    j += straight_test();
+
+    return j;
 }
 
 void moreTestCalcPi(MoreTopWindow * destination, long double *result,
@@ -100,18 +116,22 @@ int main(int argc, char ** argv)
   char *heapStorage = NULL;
   struct trace *trace = NULL;
 
-  printf("address of spin_test: %p\n", spin_test);
+//  printf("address of spin_test: %p\n", spin_test);
+//  printf("address of straight_test: %p\n", straight_test);
+//  printf("address of call_test: %p\n", call_test);
 
-  moreAllocate(&inlineStorage, &heapStorage);
-  storage = heapStorage;
-  trace = ristretto_trace_start((char *)spin_test, (char *)spin_test + SIZE - 1);
+//  moreAllocate(&inlineStorage, &heapStorage);
+//  storage = heapStorage;
+  trace = ristretto_trace_start((char *)straight_test, (char *)straight_test + SIZE - 1);
 
-  spin_test();
+//  call_test();
+  straight_test();
+//  spin_test();
 //  moreTestCalcPi(NULL, (long double *)storage, 100000000);
 
   ristretto_trace_stop(trace);
   ristretto_trace_parse(trace);
   ristretto_trace_cleanup(trace);
-  free(heapStorage);
+//  free(heapStorage);
   return 0;
 }
