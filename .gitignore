@@ -1,0 +1,8 @@
+*.o
+*.so
+*dump
+tags
+xed
+processor-trace
+mbuild
+lib

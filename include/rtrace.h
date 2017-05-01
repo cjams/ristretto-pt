@@ -1,12 +1,15 @@
 #ifndef RISTRETTO_TRACE_H
 #define RISTRETTO_TRACE_H
 
+#include <cyc.h>
 #include <intel-pt.h>
 #include <xed-interface.h>
-#include "rtrace.h"
-#include "/home/srdavos/src/linux/usr/include/linux/perf_event.h"
+#include <perf_event.h>
 
 #define rmb()asm volatile("lfence":::"memory")
+
+#define DEBUG_FILE_FLAGS O_RDWR | O_CREAT | O_TRUNC
+#define DEBUG_FILE_MODE  S_IRUSR | S_IRGRP | S_IROTH | S_IWUSR | S_IWGRP | S_IWOTH
 
 typedef unsigned int u32;
 typedef unsigned long int u64;
@@ -24,7 +27,7 @@ struct flow_monitor {
     unsigned long fwdend;
 
     /* the actual address of the forward-only block */
-    char *addr;
+    const char *addr;
 
     /* Data for the file backing the forward-only section */
     unsigned long foffset;
@@ -41,6 +44,7 @@ struct trace {
   void * data;
   void * aux;
   int fd;
+  int header_size;
 
   /* struct for enforcing forward-only */
   struct flow_monitor *monitor;

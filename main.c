@@ -11,15 +11,9 @@
 #include <sys/mman.h>
 #include <asm/msr.h>
 #include <linux/hw_breakpoint.h>
-#include <pthread.h>
-#include <intel-pt.h>
 #include <assert.h>
-#include <signal.h>
 
-#include "rtrace.h"
-#include "cyc.h"
-
-#include "/home/srdavos/src/linux/usr/include/linux/perf_event.h"
+#include <rtrace.h>
 
 /*
 /sys/bus/event_source/devices/intel_pt/format/cyc:config:1
@@ -77,6 +71,7 @@ int map_userspace(struct trace * trace)
   if (trace->base == MAP_FAILED)
     return -1;
 
+  trace->header_size = 9 * getpagesize();
   trace->header = trace->base;
   trace->data = trace->base + trace->header->data_offset;
   trace->header->aux_size = 4 * getpagesize();
@@ -279,6 +274,7 @@ int ristretto_trace_parse(void * tr)
 
   header = trace->header;
 
+#ifdef RISTRETTO_DEBUG
   printf("==========================\n");
   printf("mmap data_offset: %llx\n", trace->header->data_offset);
   printf("mmap data_size: %llx\n", trace->header->data_size);
@@ -290,21 +286,20 @@ int ristretto_trace_parse(void * tr)
   printf("mmap aux_head: %llx\n", trace->header->aux_head);
   printf("mmap aux_tail: %llx\n", trace->header->aux_tail);
 
-  int aux_dump = open("trace_aux_dump", O_RDWR | O_CREAT | O_TRUNC, S_IRWXU | S_IRWXG | S_IRWXO);
+  int aux_dump = open("trace_aux_dump", DEBUG_FILE_FLAGS, DEBUG_FILE_MODE);
   write(aux_dump, trace->aux, trace->header->aux_head);
   close(aux_dump);
+#endif
 
   config = trace->monitor->config;
   if (config == NULL) {
-    fprintf(stderr, "NULL monitor pt_config\n");
+    fprintf(stderr, "NULL monitor->config\n");
     return -1;
   }
 
   config->end = config->begin + header->aux_head - 1;
   rmb();
 
-
-  printf("Calling enforce_fwd_only...\n");
   enforce_fwd_only(trace);
 
   return 0;
@@ -320,6 +315,8 @@ int ristretto_trace_cleanup(void * tr)
 
   flow_monitor_cleanup(trace->monitor);
   close(trace->fd);
+  munmap(trace->header, trace->header_size);
+  munmap(trace->aux, trace->header->aux_size);
   free(trace->event);
   free(trace);
 

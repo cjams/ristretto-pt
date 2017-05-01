@@ -1,22 +1,37 @@
 
-IPT:=libipt.a
-RIS:=libristretto.a
-XED:=libxed.a
-SRC:=main.c processor-trace/ptxed/src/libptxed.c monitor.c
-OBJ:=main.o libptxed.o monitor.o
-CFLAGS:=-I/home/srdavos/build/kits/xed-install-base-2017-04-20-lin-x86-64/include/xed -I/home/srdavos/ristretto-pt/processor-trace/libipt/internal/include -I/home/srdavos/ristretto-pt/processor-trace/ptxed/src -static -v -DRISTRETTO_DEBUG
-LDFLAGS:=
+INCLUDE=-Ixed/prefix/include/xed -Iinclude
+INCLUDE+=-Iprocessor-trace/build/libipt/include
+INCLUDE+=-Iprocessor-trace/libipt/internal/include
+INCLUDE+=-Iprocessor-trace/ptxed/src
+
+LIBRIS:=lib/libristretto.a
+LIBIPT:=lib/libipt.a
+LIBXED:=lib/libxed.a
+
+LIBS:=$(LIBRIS) $(LIBIPT) $(LIBXED)
+
+SRC:=main.c processor-trace/ptxed/src/ris_ptxed.c monitor.c
+OBJ:=main.o ris_ptxed.o monitor.o
+
+CFLAGS=$(INCLUDE) -static -v
+
+ifeq ($(RISTRETTO_DEBUG),1)
+	CFLAGS+=-DRISTRETTO_DEBUG
+endif
 
 all: pi
 
-pi: pi.c $(RIS)
-	$(CC) $(CFLAGS) pi.c $(RIS) $(IPT) $(XED) -o pi -lpthread -lc
+pi: pi.c $(LIBRIS)
+	$(CC) $(CFLAGS) pi.c $(LIBS) -o $@ -lpthread -lc
 
-$(RIS): $(OBJ)
+$(LIBRIS): $(OBJ)
 	ar -cq $@ $(OBJ)
 
-$(OBJ): $(SRC) rtrace.h
+$(OBJ): $(SRC) include/rtrace.h
 	$(CC) $(CFLAGS) -c $(SRC)
 
 clean:
-	rm -f $(OBJ) $(RIS) pi
+	rm -f $(OBJ) $(LIBRIS) pi
+
+distclean:
+	rm -rf $(OBJ) $(LIBS) lib pi

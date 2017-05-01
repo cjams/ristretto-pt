@@ -1,0 +1,35 @@
+#!/bin/bash
+
+if [[ ! -d xed ]]; then
+    git clone https://github.com/intelxed/xed.git
+    git clone https://github.com/intelxed/mbuild.git
+fi
+
+mkdir -p xed/{build,prefix}
+pushd xed/build
+../mfile.py --install-dir ../prefix install
+popd
+
+if [[ ! -d processor-trace ]]; then
+    git clone -b ristretto https://github.com/connojd/processor-trace
+fi
+
+mkdir -p processor-trace/build
+pushd processor-trace/build
+rm -rf ./*
+
+cmake -DRISTRETTO_PT=1 \
+    -DXED_INCLUDE=../../xed/prefix/include/xed \
+    -DXED_LIBDIR=../../xed/prefix/lib \
+    -DFEATURE_THREADS=1 \
+    ..
+
+make ipt
+popd
+
+if [[ ! -d lib ]]; then
+    mkdir lib
+fi
+
+cp xed/prefix/lib/libxed.a lib/libxed.a
+cp processor-trace/build/lib/libipt.a lib/libipt.a

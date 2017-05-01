@@ -6,18 +6,13 @@
 #include <sys/stat.h>
 #include <asm/unistd.h>
 #include <fcntl.h>
-#include <pthread.h>
-#include <intel-pt.h>
 #include <assert.h>
-#include <signal.h>
 
-#include "rtrace.h"
-#include "pt_ild.h"
-#include "pt_insn_decoder.h"
-#include "ptxed.h"
-
-#define DEBUG_FILE_FLAGS O_RDWR | O_CREAT | O_TRUNC
-#define DEBUG_FILE_MODE  S_IRUSR | S_IRGRP | S_IROTH | S_IWUSR | S_IWGRP | S_IWOTH
+#include <intel-pt.h>
+#include <rtrace.h>
+#include <pt_ild.h>
+#include <pt_insn_decoder.h>
+#include <ptxed.h>
 
 extern void diagnose_insn(const char *errtype, struct pt_insn_decoder *decoder,
     struct pt_insn *insn, int errcode);
@@ -215,12 +210,13 @@ end:
 }
 
 /**
- * @mtr - address of struct flow_monitor
+ * This function parses the processor trace referenced by
+ * tr->monitor->config->begin and the raw binary contained in
+ * the file tr->monitor->memfd.  If a violation of forward-only is
+ * detected, it halts the program.
  */
 int enforce_fwd_only(struct trace *tr)
 {
-    printf("Executing enforce_fwd_only...\n");
-
     xed_state_t xed;
     u64 addr = 0, sync = 0, offset = 0;
     struct flow_monitor *mtr = tr->monitor;
@@ -244,12 +240,10 @@ int enforce_fwd_only(struct trace *tr)
         insn.ip = 0ull;
         ret = pt_insn_sync_forward(mtr->decoder);
         if (ret < 0) {
-            u64 new_sync, temp;
+            u64 new_sync;
 
             if (ret == -pte_eos) {
-                pt_insn_get_offset(mtr->decoder, &temp);
                 fprintf(stderr, "pt_insn_sync_forward: ret = pte_eos\n");
-                fprintf(stderr, "packet offset: %lx\n", temp);
                 break;
             }
 
@@ -265,22 +259,20 @@ int enforce_fwd_only(struct trace *tr)
         }
 
         while(1) {
-            printf("DEBUG: decoder->ip: %lx\n", mtr->decoder->ip);
             ret = pt_insn_get_offset(mtr->decoder, &offset);
             if (ret < 0) {
-                fprintf(stderr, "ERROR: pt_insn_get_offset: ret = %d\n", ret * -1);
+                fprintf(stderr, "DEBUG: pt_insn_get_offset: ret = %d\n", ret * -1);
                 break;
             }
 
             ret = pt_insn_next(mtr->decoder, &insn, sizeof(insn));
             if (ret < 0) {
-                fprintf(stderr, "ERROR: pt_insn_next: ret = %d\n", ret * -1);
+                fprintf(stderr, "DEBUG: pt_insn_next: ret = %d\n", ret * -1);
                 break;
             }
 
-#ifdef RISTRETTO_DEBUG
             print_insn(&insn, &xed, &options, offset, 0);
-#endif
+
             if (addr > insn.ip) {
                 fprintf(stderr, "FATAL: forward-only violation detected\n");
                 exit(1);
@@ -311,9 +303,9 @@ struct flow_monitor* flow_monitor_alloc()
 }
 
 /**
- * @tr - read-only pt trace
- * @addr - address of code block that requires forward-only execution
- * @len - length of code block that requires forward-only execution
+ * @tr - pt trace
+ * @start - start of code block that requires forward-only execution
+ * @end - end of code block that requires forward-only execution
  */
 int flow_monitor_start(struct trace *tr, char *start, char *end)
 {
